@@ -8,6 +8,7 @@ import "core:sync/chan"
 import "core:thread"
 import "core:mem"
 import "core:mem/virtual"
+import "core:strconv"
 
 read_input:: proc(path: string) -> [dynamic][dynamic]rune {
     m: [dynamic][dynamic]rune
@@ -46,6 +47,9 @@ get_next_pos:: proc(guard: Guard) -> (int, int) {
 }
 
 check_obstacle:: proc(m: [dynamic][dynamic]rune, guard: Guard) -> bool {
+    if(guard.row < 1 || guard.row >= len(m) -1 || guard.col < 1 || guard.col >= len(m[0]) -1) {
+            return false;
+        }
     switch(guard.direction) {
         case '^': return m[guard.row - 1][guard.col] == '#'
         case 'v': return m[guard.row + 1][guard.col] == '#'
@@ -77,137 +81,64 @@ find_guard:: proc(m: [dynamic][dynamic]rune) -> Guard{
     return Guard{0, 0, ' '} // should never happen
 }
 
-Input :: struct {
-    m: [dynamic][dynamic]rune,
-    guard: Guard,
-    o_x, o_y: int,
-    out_chan: ^chan.Chan(bool),
-    steps: int,
-}
 
-
-check_loop:: proc(t: thread.Task)  {
-    input := cast(^Input)t.data
-    m := input.m
-    guard := input.guard
-    o_x := input.o_x
-    o_y := input.o_y
-    m[o_x][o_y] = '#'
-    g:= guard
-    original_steps := input.steps
-    steps := 0
-    visited := make(map[string]int)
-    for true {
-        pos := fmt.tprintf("%d,%d", g.row, g.col)
-        if steps > original_steps * 2 {
-            ok := chan.send(input.out_chan^, true)
-            if !ok {
-                fmt.println("Failed to send result")
-                break
-            }
-        } // Loop detected
-        
-        x, y := get_next_pos(g)
-        if(x < 0 || x >= len(m) || y < 0 || y >= len(m[0])) {
-            break
-        }
-        if(check_obstacle(m, guard)) {
-            g = turn_right(g)
+part2:: proc(m: [dynamic][dynamic]rune, steps: int, posmap: map[string]int) {
+    guard := find_guard(m)
+    start_x, start_y := guard.row, guard.col
+    count := 0
+    for entry in posmap {
+        strs := strings.split(entry, ",")
+        row, _ := strconv.parse_int(strs[0])
+        col, _ := strconv.parse_int(strs[1])
+        if(start_x == row && start_y == col) {
             continue
         }
-        visited[pos] += 1 
-        steps += 1
-        g.row = x
-        g.col = y
-    }
-    send_ok := chan.send(input.out_chan^, false)
-    if !send_ok {
-        fmt.println("Failed to send result")
-
+        //fmt.println(row, col)
+        
+        m[row][col] = '#'
+        _, curr_steps, isloop := count_unique_positions(m, true, steps)
+        if(isloop) {
+            count += 1
         }
+        m[row][col] = '.'
+    }
+    fmt.println(count)
 }
 
-
-
-count_obstruction_positions:: proc(m: [dynamic][dynamic]rune, guard: Guard, steps: int) -> int {
-    count := 0
-    wg : sync.Wait_Group
-
-    threadPool :thread.Pool
-    poolsize := 12
-    thread.pool_init(&threadPool, context.allocator, poolsize)
-    thread.pool_start(&threadPool)
-    
-    out_chan, out_err := chan.create(chan.Chan(bool), context.allocator)
-    if out_err != os.ERROR_NONE {
-        fmt.println("Failed to create output channel")
-        return -1
-    }
-    defer chan.destroy(out_chan)
-    defer thread.pool_destroy(&threadPool)
-    client_arena :virtual.Arena
-    arena_allocator_error := virtual.arena_init_growing(&client_arena, 1 * mem.Byte)
-    client_allocator := virtual.arena_allocator(&client_arena)
-    poolindex := 0
-    for _, i in m {
-        for _, j in m[i] {
-            if (i == guard.row && j == guard.col) {
-                continue // Skip guard's starting position
-            }
-            m_copy := m
-            g_copy := guard
-            input := Input{m_copy, g_copy, i, j, &out_chan, steps}
-            thread.pool_add_task(&threadPool, client_allocator, check_loop, &input, poolindex % poolsize)
-        }
-    }
-    for thread.pool_num_in_processing(&threadPool) > 0 || chan.len(out_chan) > 0 {
-        result, ok := chan.recv(out_chan)
-        if !ok {
-            fmt.println("Failed to receive result")
-            return -1
-        }
-        fmt.println("Thread pool state", thread.pool_num_in_processing(&threadPool), "out chan state", chan.len(out_chan), "result", count)
-        count += result ? 1 : 0
-    }
-    thread.pool_finish(&threadPool)
-    return count
-}
-
-part2:: proc(m: [dynamic][dynamic]rune, steps: int) {
-    guard := find_guard(m)
-    result := count_obstruction_positions(m, guard, steps)
-    fmt.println(result)
-}
-
-part1:: proc(m: [dynamic][dynamic]rune) -> int {
+count_unique_positions:: proc(m: [dynamic][dynamic]rune, part2: bool, previous_steps: int) -> (map[string]int, int, bool) {
     posmap := make(map[string]int)
     guard := find_guard(m)
     rows := len(m)
     cols := len(m[0])
     steps := 0
-    posmap[fmt.tprintf("%d,%d", guard.row, guard.col)] = 1
+    posmap[fmt.tprintf("%d,%d,%c", guard.row, guard.col, guard.direction)] = 1
     for true {
-        x, y := get_next_pos(guard)
-        if(x < 0 || x >= rows || y < 0 || y >= cols) {
-            break
+        
+        if(part2) {
+            if(steps > rows * cols) {
+                return posmap, steps, true
+            }
         }
         if(check_obstacle(m, guard)) {
             guard = turn_right(guard)
             continue
         }
-        
+        x, y := get_next_pos(guard)
+        if(x < 0 || x >= rows || y < 0 || y >= cols) {
+            break
+        }
+        steps += 1
         guard.row = x
         guard.col = y
-        posmap[fmt.tprintf("%d,%d", guard.row, guard.col)] = 1
-        steps += 1
+        posmap[fmt.tprintf("%d,%d,%c", guard.row, guard.col, guard.direction)] += 1
     }
-    fmt.println(len(posmap))
-    return steps
+    return posmap, steps, false
 }
+
 
 main:: proc() {
     m := read_input("input")
-    result := part1(m)
-    fmt.println(result)
-    part2(m, result)
+    posmap, steps, _ := count_unique_positions(m, false, 0)
+    fmt.println(len(posmap))
+    part2(m, steps, posmap)
 }
